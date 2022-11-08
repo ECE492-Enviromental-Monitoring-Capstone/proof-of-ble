@@ -1,0 +1,54 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<node>
+	<interface name="org.freedesktop.DBus.Introspectable">
+		<method name="Introspect">
+			<arg name="xml" type="s" direction="out"/>
+		</method>
+	</interface>
+	<interface name="org.freedesktop.DBus.Properties">
+		<method name="Get">
+			<arg name="interface" type="s" direction="in"/>
+			<arg name="name" type="s" direction="in"/>
+			<arg name="value" type="v" direction="out"/>
+		</method>
+		<method name="Set">
+			<arg name="interface" type="s" direction="in"/>
+			<arg name="name" type="s" direction="in"/>
+			<arg name="value" type="v" direction="in"/>
+		</method>
+		<method name="GetAll">
+			<arg name="interface" type="s" direction="in"/>
+			<arg name="properties" type="a{sv}" direction="out"/>
+		</method>
+		<signal name="PropertiesChanged">
+			<arg name="interface" type="s"/>
+			<arg name="changed_properties" type="a{sv}"/>
+			<arg name="invalidated_properties" type="as"/>
+		</signal>
+	</interface>
+	<interface name="org.bluez.GattManager1">
+		<method name="RegisterApplication">
+			<arg name="application" type="o" direction="in"/>
+			<arg name="options" type="a{sv}" direction="in"/>
+		</method>
+		<method name="UnregisterApplication">
+			<arg name="application" type="o" direction="in"/>
+		</method>
+	</interface>
+	<interface name="org.bluez.LEAdvertisingManager1">
+		<method name="RegisterAdvertisement">
+			<arg name="advertisement" type="o" direction="in"/>
+			<arg name="options" type="a{sv}" direction="in"/>
+		</method>
+		<method name="UnregisterAdvertisement">
+			<arg name="service" type="o" direction="in"/>
+		</method>
+		<property name="ActiveInstances" type="y" access="read"></property>
+		<property name="SupportedInstances" type="y" access="read"></property>
+		<property name="SupportedIncludes" type="as" access="read"></property>
+		<property name="SupportedSecondaryChannels" type="as" access="read"></property>
+		<property name="SupportedFeatures" type="as" access="read"></property>
+		<property name="SupportedCapabilities" type="a{sv}" access="read"></property>
+	</interface>
+</node>
