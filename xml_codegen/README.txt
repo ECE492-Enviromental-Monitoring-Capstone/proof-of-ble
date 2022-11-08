@@ -129,9 +129,16 @@ The file bluez_hci_introspect.xml is what we get out of this process.
 
 Now we need three other xml files for code generation. We need these three objects in particular:
 
-https://git.kernel.org/pub/scm/bluetooth/bluez.git/tree/doc/advertising-api.txt ->
+https://git.kernel.org/pub/scm/bluetooth/bluez.git/tree/doc/advertising-api.txt
 org.bluez.LEAdvertisement1
 
-This object also needs to support the interface org.freedesktop.DBus.Properties and for good measure
-we will have it support org.freedesktop.DBus.Introspectable.
+https://git.kernel.org/pub/scm/bluetooth/bluez.git/tree/doc/gatt-api.txt
+org.bluez.GattService1
+org.bluez.GattCharacteristic1
+
+A manager object is also needed on which the services and characteristics are managed by.
+This needs to support org.freedesktop.DBus.ObjectManager however this is done for us automatically
+by some automagic parts of Gio.
+
+
 
