@@ -1,0 +1,2 @@
+# Shell scripts should only be line feed or bash breaks.
+*.sh text eol=lf
