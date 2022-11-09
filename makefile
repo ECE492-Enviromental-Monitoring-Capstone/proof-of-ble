@@ -42,5 +42,5 @@ $(OBJ_DIR)/%.o: %.c
 
 clean:
 	rm -f $(EXE)
-	rm -f $(OBJ_DIR)/*
+	rm -rf $(OBJ_DIR)/*
 	rmdir $(OBJ_DIR)
