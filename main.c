@@ -1,6 +1,8 @@
-#include "bluez_gatt.h"
 #include <glib.h>
+#include <glib-object.h>
 #include <glib/gprintf.h>
+#include <gio/gio.h>
+
 #include <stdio.h>
 #include <unistd.h>
 
@@ -22,6 +24,7 @@ void cb_bus_ready(GObject *source_object, GAsyncResult *res,
     return;
   }
 
+/*
   app = g_dbus_object_manager_server_new(APP_OBJ_PATH);
 
   AEMIOrgFreedesktopDBusProperties *service_prop_interface =
@@ -37,6 +40,7 @@ void cb_bus_ready(GObject *source_object, GAsyncResult *res,
                                                    service_service_interface);
   g_object_unref(service_prop_interface);
   g_object_unref(service_service_interface);
+*/
 
   g_printf("Made Service Object!\n");
 }

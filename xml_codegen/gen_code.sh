@@ -31,7 +31,7 @@ gdbus-codegen --c-namespace Bluez_Characteristic \
 gdbus-codegen --c-namespace Bluez_Characteristic \
 	--c-generate-autocleanup all \
 	--c-generate-object-manager \
-	--body --output ${GEN_DIR}/bluez_chracteristic.c \
+	--body --output ${GEN_DIR}/bluez_characteristic.c \
 	./bluez_gattcharacteristic.xml
 
 gdbus-codegen --c-namespace Bluez_Advertisement \
