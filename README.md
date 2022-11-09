@@ -20,6 +20,8 @@ paste in this
 <busconfig>
   <policy context="default">
     <allow own="edu.aemi"/>
+    <allow send_destination="edu.aemi"/>
+    <allow receive_sender="edu.aemi"/>
   </policy>
 </busconfig>
 

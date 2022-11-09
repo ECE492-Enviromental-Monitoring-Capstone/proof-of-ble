@@ -30,9 +30,14 @@ How the following code is supposed to work:
 GDBusConnection *sys_bus = NULL;
 guint own_name_id = 0;
 
+void callback_bus_name_lost(GDBusConnection *connection, const gchar *name,
+                            gpointer user_data) {
+  g_printf("Bus name lost for some reason?\n");
+}
+
 void callback_bus_name_aquired(GDBusConnection *connection, const gchar *name,
                                gpointer user_data) {
-  g_printf("Name \"%s\" aquired on system bus!", name);
+  g_printf("Name \"%s\" aquired on system bus!\n", name);
 }
 
 void callback_sys_bus_ready(GObject *source_object, GAsyncResult *res,
@@ -47,7 +52,7 @@ void callback_sys_bus_ready(GObject *source_object, GAsyncResult *res,
 
   own_name_id = g_bus_own_name_on_connection(
       sys_bus, APP_BUS_NAME, G_BUS_NAME_OWNER_FLAGS_NONE,
-      callback_bus_name_aquired, NULL, NULL, NULL);
+      callback_bus_name_aquired, callback_bus_name_lost, NULL, NULL);
 }
 
 int main() {
