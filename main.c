@@ -32,6 +32,7 @@ How the following code is supposed to work:
 GDBusConnection *sys_bus = NULL;
 guint own_name_id = 0;
 GDBusObjectManagerServer *obj_server = NULL;
+BluezAdvertisementOrgBluezLEAdvertisement1 *adv_iface = NULL;
 const gchar *const uuids[2] = {AEMI_SERVICE_UUID, NULL};
 
 void callback_advertisement_registered(GObject *source_object, GAsyncResult *res,
@@ -44,6 +45,7 @@ void callback_advertisement_registered(GObject *source_object, GAsyncResult *res
     {
         g_printf("Result info:\n");
         g_variant_print(dbus_result, TRUE);
+        g_printf("\n");
     }
     if (dbus_error != NULL)
     {
@@ -94,20 +96,13 @@ void callback_sys_bus_ready(GObject *source_object, GAsyncResult *res, gpointer 
 
     obj_server = g_dbus_object_manager_server_new(APP_OBJ_PATH);
 
-    BluezAdvertisementOrgBluezLEAdvertisement1 *adv_iface =
-        bluez_advertisement_org_bluez_leadvertisement1_skeleton_new();
-    BluezAdvertisementObjectSkeleton *adv_obj =
-        bluez_advertisement_object_skeleton_new(ADV_OBJ_PATH);
+    adv_iface = bluez_advertisement_org_bluez_leadvertisement1_skeleton_new();
 
     // Set properties
     bluez_advertisement_org_bluez_leadvertisement1_set_type_(adv_iface, "peripheral");
     bluez_advertisement_org_bluez_leadvertisement1_set_local_name(adv_iface, "AEMI");
     bluez_advertisement_org_bluez_leadvertisement1_set_discoverable(adv_iface, TRUE);
     bluez_advertisement_org_bluez_leadvertisement1_set_service_uuids(adv_iface, uuids);
-
-    bluez_advertisement_object_skeleton_set_org_bluez_leadvertisement1(adv_obj,
-                                                                       adv_iface);
-    g_object_unref(adv_iface);
 
     /*
     g_signal_connect(adv_obj, "authorize-method", G_CALLBACK(handle_authorize_method),
@@ -116,8 +111,15 @@ void callback_sys_bus_ready(GObject *source_object, GAsyncResult *res, gpointer 
 
     g_dbus_object_manager_server_set_connection(obj_server, sys_bus);
 
-    g_dbus_object_manager_server_export(obj_server, G_DBUS_OBJECT_SKELETON(adv_obj));
-    g_object_unref(adv_obj);
+    if (g_dbus_interface_skeleton_export(G_DBUS_INTERFACE_SKELETON(adv_iface), sys_bus,
+                                         ADV_OBJ_PATH, NULL))
+    {
+        g_printf("Advertisement Exported\n");
+    }
+    else
+    {
+        g_printf("Advertisement Failed to Export!\n");
+    }
 
     own_name_id = g_bus_own_name_on_connection(
         sys_bus, APP_BUS_NAME, G_BUS_NAME_OWNER_FLAGS_NONE, callback_bus_name_aquired,
