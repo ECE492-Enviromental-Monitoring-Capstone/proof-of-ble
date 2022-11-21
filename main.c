@@ -24,6 +24,8 @@
 #define AEMI_SERVICE_UUID "2d2a7a9b-9b68-491d-b507-1f27244b5b82"
 #define AEMI_CHAR_UUID "2d2a7a9b-9b68-491d-b507-1f27244b5b83" // One Higher
 
+#define BLE_DEFAULT_MTU 23 // Minimum Required!
+
 /*
 How the following code is supposed to work:
 
@@ -35,7 +37,7 @@ GDBusConnection *sys_bus = NULL;
 guint own_name_id = 0;
 GDBusObjectManagerServer *obj_server = NULL;
 BluezAdvertisementOrgBluezLEAdvertisement1 *adv_iface = NULL;
-const gchar *const uuids[2] = {AEMI_SERVICE_UUID, NULL};
+const gchar *const uuids[] = {AEMI_SERVICE_UUID, NULL};
 
 void callback_advertisement_registered(GObject *source_object, GAsyncResult *res,
                                        gpointer user_data)
@@ -118,8 +120,31 @@ void callback_sys_bus_ready(GObject *source_object, GAsyncResult *res, gpointer 
                                                                             char_iface);
 
     // Set properties.
-    // Service
+    // For Service
+    gchar const *service_includes[] = {CHAR_OBJ_PATH, NULL};
     bluez_service_org_bluez_gatt_service1_set_uuid(service_iface, AEMI_SERVICE_UUID);
+    bluez_service_org_bluez_gatt_service1_set_primary(service_iface, TRUE);
+    bluez_service_org_bluez_gatt_service1_set_includes(service_iface, service_includes);
+    bluez_service_org_bluez_gatt_service1_set_handle(service_iface, 0);
+
+    // For Characteristic
+    gchar const *char_flags[] = {NULL};
+    bluez_characteristic_org_bluez_gatt_characteristic1_set_uuid(char_iface,
+                                                                 AEMI_CHAR_UUID);
+    bluez_characteristic_org_bluez_gatt_characteristic1_set_service(char_iface,
+                                                                    SERVICE_OBJ_PATH);
+    bluez_characteristic_org_bluez_gatt_characteristic1_set_value(char_iface, "");
+    bluez_characteristic_org_bluez_gatt_characteristic1_set_write_acquired(char_iface,
+                                                                           FALSE);
+    bluez_characteristic_org_bluez_gatt_characteristic1_set_notify_acquired(char_iface,
+                                                                            FALSE);
+    bluez_characteristic_org_bluez_gatt_characteristic1_set_notifying(char_iface, FALSE);
+    bluez_characteristic_org_bluez_gatt_characteristic1_set_flags(char_iface, char_flags);
+    bluez_characteristic_org_bluez_gatt_characteristic1_set_handle(char_iface, 0);
+    bluez_characteristic_org_bluez_gatt_characteristic1_set_mtu(char_iface,
+                                                                BLE_DEFAULT_MTU);
+
+    // TODO: Handlers for the different methods!
 
     // Export Service and Characteristic (one each).
     g_dbus_object_manager_server_export(obj_server,
