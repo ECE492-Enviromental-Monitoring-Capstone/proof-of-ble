@@ -18,9 +18,11 @@
 #define APP_BUS_NAME "edu.aemi"
 #define APP_OBJ_PATH "/edu/aemi"
 #define SERVICE_OBJ_PATH APP_OBJ_PATH "/service0"
+#define CHAR_OBJ_PATH SERVICE_OBJ_PATH "/char0"
 #define ADV_OBJ_PATH APP_OBJ_PATH "/advertisement"
 
 #define AEMI_SERVICE_UUID "2d2a7a9b-9b68-491d-b507-1f27244b5b82"
+#define AEMI_CHAR_UUID "2d2a7a9b-9b68-491d-b507-1f27244b5b83" // One Higher
 
 /*
 How the following code is supposed to work:
@@ -40,12 +42,9 @@ void callback_advertisement_registered(GObject *source_object, GAsyncResult *res
 {
     GError *dbus_error = NULL;
     GVariant *dbus_result = g_dbus_connection_call_finish(sys_bus, res, &dbus_error);
-    g_printf("Advertisement Registered!\n");
     if (dbus_result != NULL)
     {
-        g_printf("Result info:\n");
-        g_variant_print(dbus_result, TRUE);
-        g_printf("\n");
+        g_printf("Advertisement Registered!\n");
     }
     if (dbus_error != NULL)
     {
@@ -104,10 +103,35 @@ void callback_sys_bus_ready(GObject *source_object, GAsyncResult *res, gpointer 
     bluez_advertisement_org_bluez_leadvertisement1_set_discoverable(adv_iface, TRUE);
     bluez_advertisement_org_bluez_leadvertisement1_set_service_uuids(adv_iface, uuids);
 
-    /*
-    g_signal_connect(adv_obj, "authorize-method", G_CALLBACK(handle_authorize_method),
-                     "Advertisement!");
-    */
+    BluezServiceOrgBluezGattService1 *service_iface =
+        bluez_service_org_bluez_gatt_service1_skeleton_new();
+    BluezServiceObjectSkeleton *service_object =
+        bluez_service_object_skeleton_new(SERVICE_OBJ_PATH);
+    bluez_service_object_skeleton_set_org_bluez_gatt_service1(service_object,
+                                                              service_iface);
+
+    BluezCharacteristicOrgBluezGattCharacteristic1 *char_iface =
+        bluez_characteristic_org_bluez_gatt_characteristic1_skeleton_new();
+    BluezCharacteristicObjectSkeleton *char_object =
+        bluez_characteristic_object_skeleton_new(CHAR_OBJ_PATH);
+    bluez_characteristic_object_skeleton_set_org_bluez_gatt_characteristic1(char_object,
+                                                                            char_iface);
+
+    // Set properties.
+    // Service
+    bluez_service_org_bluez_gatt_service1_set_uuid(service_iface, AEMI_SERVICE_UUID);
+
+    // Export Service and Characteristic (one each).
+    g_dbus_object_manager_server_export(obj_server,
+                                        G_DBUS_OBJECT_SKELETON(service_object));
+    // You can in principle unrefrence them.
+    g_object_unref(service_iface);
+    g_object_unref(service_object);
+
+    g_dbus_object_manager_server_export(obj_server, G_DBUS_OBJECT_SKELETON(char_object));
+    // Unreference them again
+    g_object_unref(char_iface);
+    g_object_unref(char_object);
 
     g_dbus_object_manager_server_set_connection(obj_server, sys_bus);
 
