@@ -14,6 +14,7 @@
 #define BLUEZ_BUS_NAME "org.bluez"
 #define BLUEZ_HCI_OBJ_PATH "/org/bluez/hci0"
 #define BLUEZ_HCI_ADV_IFACE "org.bluez.LEAdvertisingManager1"
+#define BLUEZ_HCI_GATT_MANAGER_IFACE "org.bluez.GattManager1"
 
 #define APP_BUS_NAME "edu.aemi"
 #define APP_OBJ_PATH "/edu/aemi"
@@ -55,6 +56,29 @@ void callback_advertisement_registered(GObject *source_object, GAsyncResult *res
     }
 }
 
+void callback_gatt_app_registered(GObject *source_object, GAsyncResult *res,
+                                  gpointer user_data)
+{
+    GError *dbus_error = NULL;
+    GVariant *dbus_result = g_dbus_connection_call_finish(sys_bus, res, &dbus_error);
+    if (dbus_result != NULL)
+    {
+        g_printf("Application Registered!\n");
+        g_printf("Registering Advertisement!\n");
+
+        g_dbus_connection_call(
+            sys_bus, BLUEZ_BUS_NAME, BLUEZ_HCI_OBJ_PATH, BLUEZ_HCI_ADV_IFACE,
+            "RegisterAdvertisement", g_variant_new("(oa{sv})", ADV_OBJ_PATH, NULL), NULL,
+            G_DBUS_CALL_FLAGS_NONE, G_MAXINT, NULL,
+            (GAsyncReadyCallback)callback_advertisement_registered, NULL);
+    }
+    if (dbus_error != NULL)
+    {
+        g_printf("Error: %s\n", dbus_error->message);
+        g_error_free(dbus_error);
+    }
+}
+
 void callback_bus_name_lost(GDBusConnection *connection, const gchar *name,
                             gpointer user_data)
 {
@@ -65,13 +89,13 @@ void callback_bus_name_aquired(GDBusConnection *connection, const gchar *name,
                                gpointer user_data)
 {
     g_printf("Name \"%s\" aquired on system bus!\n", name);
-    g_printf("Registering Advertisement!\n");
 
+    g_printf("Registering Service!\n");
     g_dbus_connection_call(sys_bus, BLUEZ_BUS_NAME, BLUEZ_HCI_OBJ_PATH,
-                           BLUEZ_HCI_ADV_IFACE, "RegisterAdvertisement",
-                           g_variant_new("(oa{sv})", ADV_OBJ_PATH, NULL), NULL,
+                           BLUEZ_HCI_GATT_MANAGER_IFACE, "RegisterApplication",
+                           g_variant_new("(oa{sv})", APP_OBJ_PATH, NULL), NULL,
                            G_DBUS_CALL_FLAGS_NONE, G_MAXINT, NULL,
-                           (GAsyncReadyCallback)callback_advertisement_registered, NULL);
+                           (GAsyncReadyCallback)callback_gatt_app_registered, NULL);
 }
 
 gboolean handle_authorize_method(GDBusObjectSkeleton *self,
@@ -121,7 +145,7 @@ void callback_sys_bus_ready(GObject *source_object, GAsyncResult *res, gpointer 
 
     // Set properties.
     // For Service
-    gchar const *service_includes[] = {CHAR_OBJ_PATH, NULL};
+    gchar const *service_includes[] = {NULL}; // Strange not useful feature!
     bluez_service_org_bluez_gatt_service1_set_uuid(service_iface, AEMI_SERVICE_UUID);
     bluez_service_org_bluez_gatt_service1_set_primary(service_iface, TRUE);
     bluez_service_org_bluez_gatt_service1_set_includes(service_iface, service_includes);
@@ -153,7 +177,10 @@ void callback_sys_bus_ready(GObject *source_object, GAsyncResult *res, gpointer 
     g_object_unref(service_iface);
     g_object_unref(service_object);
 
-    g_dbus_object_manager_server_export(obj_server, G_DBUS_OBJECT_SKELETON(char_object));
+    // Don't export, test.
+
+    // g_dbus_object_manager_server_export(obj_server,
+    // G_DBUS_OBJECT_SKELETON(char_object));
     // Unreference them again
     g_object_unref(char_iface);
     g_object_unref(char_object);
