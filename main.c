@@ -40,6 +40,75 @@ GDBusObjectManagerServer *obj_server = NULL;
 BluezAdvertisementOrgBluezLEAdvertisement1 *adv_iface = NULL;
 const gchar *const uuids[] = {AEMI_SERVICE_UUID, NULL};
 
+/*
+Signal Handlers for the Characteristic!
+*/
+gboolean handle_acquire_notify(BluezCharacteristicOrgBluezGattCharacteristic1 *object,
+                               GDBusMethodInvocation *invocation, GVariant *arg_options,
+                               gpointer user_data)
+{
+    gchar *var_string = g_variant_print(arg_options, TRUE);
+    g_printf("Acquire Notify Called! Options:%s\n", var_string);
+    g_free(var_string);
+    return FALSE; // Not Handled
+};
+
+gboolean handle_acquire_write(BluezCharacteristicOrgBluezGattCharacteristic1 *object,
+                              GDBusMethodInvocation *invocation, GVariant *arg_options,
+                              gpointer user_data)
+{
+    g_printf("Acquire Write Called! Options:\n");
+    g_variant_print(arg_options, TRUE);
+    return FALSE;
+};
+
+gboolean handle_confirm(BluezCharacteristicOrgBluezGattCharacteristic1 *object,
+                        GDBusMethodInvocation *invocation, gpointer user_data)
+{
+    g_printf("Confirmation Recievied\n");
+
+    // No return
+    g_dbus_method_invocation_return_value(invocation, NULL);
+    return TRUE;
+};
+
+gboolean handle_read_value(BluezCharacteristicOrgBluezGattCharacteristic1 *object,
+                           GDBusMethodInvocation *invocation, GVariant *arg_options,
+                           gpointer user_data)
+{
+    return FALSE; // Not Handled
+};
+
+gboolean handle_start_notify(BluezCharacteristicOrgBluezGattCharacteristic1 *object,
+                             GDBusMethodInvocation *invocation, gpointer user_data)
+{
+    g_printf("Start Notify Called!\n");
+
+    // No return
+    g_dbus_method_invocation_return_value(invocation, NULL);
+    return TRUE;
+};
+
+gboolean handle_stop_notify(BluezCharacteristicOrgBluezGattCharacteristic1 *object,
+                            GDBusMethodInvocation *invocation, gpointer user_data)
+{
+    g_printf("Stop Notify Called!\n");
+
+    // No return
+    g_dbus_method_invocation_return_value(invocation, NULL);
+    return TRUE;
+};
+
+gboolean handle_write_value(BluezCharacteristicOrgBluezGattCharacteristic1 *object,
+                            GDBusMethodInvocation *invocation, const gchar *arg_value,
+                            GVariant *arg_options, gpointer user_data)
+{
+    return FALSE; // Not Handled
+};
+
+/*
+ Callbacks and main code!
+*/
 void callback_advertisement_registered(GObject *source_object, GAsyncResult *res,
                                        gpointer user_data)
 {
@@ -152,7 +221,7 @@ void callback_sys_bus_ready(GObject *source_object, GAsyncResult *res, gpointer 
     bluez_service_org_bluez_gatt_service1_set_handle(service_iface, 0);
 
     // For Characteristic
-    gchar const *char_flags[] = {NULL};
+    gchar const *char_flags[] = {"write-without-response", "notify", NULL};
     bluez_characteristic_org_bluez_gatt_characteristic1_set_uuid(char_iface,
                                                                  AEMI_CHAR_UUID);
     bluez_characteristic_org_bluez_gatt_characteristic1_set_service(char_iface,
@@ -168,7 +237,16 @@ void callback_sys_bus_ready(GObject *source_object, GAsyncResult *res, gpointer 
     bluez_characteristic_org_bluez_gatt_characteristic1_set_mtu(char_iface,
                                                                 BLE_DEFAULT_MTU);
 
-    // TODO: Handlers for the different methods!
+    // Handlers for the different methods!
+    g_signal_connect(char_iface, "handle-acquire-notify",
+                     G_CALLBACK(handle_acquire_notify), NULL);
+    g_signal_connect(char_iface, "handle-acquire-write", G_CALLBACK(handle_acquire_write),
+                     NULL);
+    g_signal_connect(char_iface, "handle-confirm", G_CALLBACK(handle_confirm), NULL);
+    g_signal_connect(char_iface, "handle-start-notify", G_CALLBACK(handle_start_notify),
+                     NULL);
+    g_signal_connect(char_iface, "handle-stop-notify", G_CALLBACK(handle_stop_notify),
+                     NULL);
 
     // Export Service and Characteristic (one each).
     g_dbus_object_manager_server_export(obj_server,
@@ -177,10 +255,7 @@ void callback_sys_bus_ready(GObject *source_object, GAsyncResult *res, gpointer 
     g_object_unref(service_iface);
     g_object_unref(service_object);
 
-    // Don't export, test.
-
-    // g_dbus_object_manager_server_export(obj_server,
-    // G_DBUS_OBJECT_SKELETON(char_object));
+    g_dbus_object_manager_server_export(obj_server, G_DBUS_OBJECT_SKELETON(char_object));
     // Unreference them again
     g_object_unref(char_iface);
     g_object_unref(char_object);

@@ -29,7 +29,7 @@
 		<property name="NotifyAcquired" type="b" access="read" />
 		<property name="Notifying" type="b" access="read" />
 		<property name="Flags" type="as" access="read" />
-		<property name="Handle" type="q" access="read" />
+		<property name="Handle" type="q" access="readwrite" />
 		<property name="MTU" type="q" access="read" />
 	</interface>
 </node>
