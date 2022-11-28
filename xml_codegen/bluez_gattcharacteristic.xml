@@ -11,12 +11,16 @@
 		</method>
 		<method name="AcquireWrite">
 			<arg type="a{sv}" name="options" direction="in" />
-			<arg type="h" name="sockfd" direction="out" />
+			<arg type="h" name="sockfd" direction="out"> 
+				<annotation name="org.gtk.GDBus.C.UnixFD" value="true" />
+			</arg>
 			<arg type="q" name="MTU" direction="out" />
 		</method>
 		<method name="AcquireNotify">
 			<arg type="a{sv}" name="options" direction="in" />
-			<arg type="h" name="sockfd" direction="out" />
+			<arg type="h" name="sockfd" direction="out">
+				<annotation name="org.gtk.GDBus.C.UnixFD" value="true" />
+			</arg>
 			<arg type="q" name="MTU" direction="out" />
 		</method>
 		<method name="StartNotify" />

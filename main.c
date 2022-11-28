@@ -1,14 +1,16 @@
 #include <gio/gio.h>
+#include <gio/gunixfdlist.h>
 #include <glib-object.h>
 #include <glib.h>
 #include <glib/gprintf.h>
 
+#include <fcntl.h>
 #include <stdio.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 #include "bluez_advertisement.h"
 #include "bluez_characteristic.h"
-#include "bluez_hci.h"
 #include "bluez_service.h"
 
 #define DBUS_PROP_IFACE "org.freedesktop.DBus.Properties"
@@ -32,6 +34,9 @@
 #define BLE_DEFAULT_MTU 23                // Minimum Required!
 #define NOTIFY_REP_TIME_MS 3000           // Send message every 3 seconds
 #define NOTIFY_REP_MSG "BLE Notify On!\n" // Send this message!
+
+#define MAX_SEND_QUEUE_BYTES 512 // At most 1/2 KiB can be queued up to send.
+
 /*
 How the following code is supposed to work:
 
@@ -58,13 +63,20 @@ The implementation is currently behaviourly simplistic.
 // This struct contains data for each connected BLE device!
 typedef struct ConnectedDevice
 {
-    guint32 counter;             // Just a random counter.
-    gchar *obj;                  // Object path for the remote device.
-    GSocket *write_sock;         // This is the socket which recieves data written to the
-                                 // characteristic.
-    GSocket *notif_sock;         // This is the socket which sends notifications out.
-    guint notify_timeout_source; // This is a callback which is using obj. Delete before
-                                 // freeing obj.
+    guint32 counter;     // Just a random counter.
+    gchar *obj;          // Object path for the remote device.
+    GSocket *write_sock; // This is the socket which recieves data written to the
+                         // characteristic.
+    GSocket *notif_sock; // This is the socket which sends notifications out.
+
+    GByteArray *notif_send_queue; // Bytes to be sent!
+
+    GSource *
+        notify_sending_source; // This is a source which tries to send out the send queue.
+
+    GSource
+        *notify_timeout_source; // This is a timeout source which periodically sends data,
+                                // it holds a reference to us so must be deleted first.
 } ConnectedDevice;
 
 // Dictionary for HCI objects (connected devices) -> ConnectedDevice .
@@ -72,18 +84,30 @@ typedef struct ConnectedDevice
 GHashTable *connected_dict;
 
 // Helper function for deleting a connected device.
-void free_connected(ConnectedDevice *to_remove)
+void free_connected(ConnectedDevice *dev)
 {
+    // Callback needs to be deleted.
+    if (dev->notify_timeout_source != NULL)
+    {
+        g_source_destroy(dev->notify_timeout_source);
+        g_source_unref(dev->notify_timeout_source);
+    }
 
-    if (to_remove->write_sock)
-        g_object_unref(to_remove->write_sock);
-    if (to_remove->notif_sock)
-        g_object_unref(to_remove->notif_sock);
+    if (dev->notify_sending_source != NULL)
+    {
+        g_source_destroy(dev->notify_sending_source);
+        g_source_unref(dev->notify_sending_source);
+    }
 
-    // Callback needs to be deleted before obj is freed!
-    g_source_remove(to_remove->notify_timeout_source);
-    g_free(to_remove->obj); // Delete the string we allocated for it as a key.
-    g_free(to_remove);      // Delete the entire struct.
+    if (dev->write_sock != NULL)
+        g_object_unref(dev->write_sock);
+    if (dev->notif_sock != NULL)
+        g_object_unref(dev->notif_sock);
+
+    g_byte_array_unref(dev->notif_send_queue);
+
+    g_free(dev->obj); // Delete the string we allocated for it as a key.
+    g_free(dev);      // Delete the entire struct.
 }
 
 // Register a new connection and create a ConnectedDevice for it.
@@ -105,6 +129,8 @@ ConnectedDevice *new_connected(gchar const *obj)
     new_device->obj = g_strdup(obj); // Note: The key is also copied.
     new_device->write_sock = NULL;
     new_device->notif_sock = NULL;
+
+    new_device->notif_send_queue = g_byte_array_sized_new(MAX_SEND_QUEUE_BYTES);
 
     /* Old code: Don't launch on startup, make on demand.
     new_device->write_sock = g_socket_new(G_SOCKET_FAMILY_UNIX, G_SOCKET_TYPE_STREAM,
@@ -143,25 +169,170 @@ void remove_connected(gchar const *obj)
 
 /*
 GSources for Notifications
-
 */
+gboolean notify_write_callback(GSocket *socket, GIOCondition condition,
+                               gpointer user_data)
+{
+    ConnectedDevice *dev = (ConnectedDevice *)user_data;
+
+    g_assert(!(condition &
+               (G_IO_IN | G_IO_PRI | G_IO_NVAL | G_IO_ERR))); // This should never happen.
+
+    if (condition & G_IO_HUP & 0) // Its closed on the other side!
+    {
+        g_printf("Notify pipe for \"%s\" is broken, emptying send queue.\n", dev->obj);
+
+        dev->notif_send_queue->len = 0; // Flush send queue
+        // Remove our source
+        g_source_unref(dev->notify_sending_source);
+        dev->notify_sending_source = NULL;
+
+        // Delete the dead socket.
+        g_assert(dev->notif_sock != NULL);
+        g_object_unref(dev->notif_sock);
+        dev->notif_sock = NULL;
+
+        return G_SOURCE_REMOVE; // Do not continue this callback.
+    }
+
+    GError *err = NULL;
+
+    g_assert(condition & G_IO_OUT);
+    g_assert(!g_socket_get_blocking(socket));
+    g_assert(socket == dev->notif_sock);
+
+    if (dev->notif_send_queue->len < 1)
+    {
+        g_printf("warn: notify callback called for no data.\n");
+        // Remove our source
+        g_source_unref(dev->notify_sending_source);
+        dev->notify_sending_source = NULL;
+        return G_SOURCE_REMOVE;
+    }
+
+    gssize sent_len = g_socket_send(socket, dev->notif_send_queue->data,
+                                    dev->notif_send_queue->len, NULL, &err);
+
+    if (err == NULL)
+    {
+        g_assert(sent_len > 0);
+        g_assert(sent_len <= dev->notif_send_queue->len); // More bytes impossible.
+
+        if (sent_len == dev->notif_send_queue->len)
+        {
+            // Everything is sent, can delete our source and complete.
+            dev->notif_send_queue->len = 0;
+            g_source_unref(dev->notify_sending_source);
+            dev->notify_sending_source = NULL;
+            return G_SOURCE_REMOVE;
+        }
+        else
+        {
+            // Some bytes leftover.
+            g_byte_array_remove_range(dev->notif_send_queue, 0, sent_len);
+            return G_SOURCE_CONTINUE;
+        }
+    }
+    else
+    {
+        if (g_error_matches(err, G_IO_ERROR, G_IO_ERROR_WOULD_BLOCK))
+        {
+            g_printf("Info: G_IO_OUT was ready but socket is blocking.\n");
+            g_error_free(err);
+            // Nothing to do, just continue.
+            return G_SOURCE_CONTINUE;
+        }
+
+        // Other errors are bugs.
+        g_printf("Error: notif callback had an error: \"%s\"\n", err->message);
+        g_error_free(err);
+
+        // Don't attempt to recover.
+        dev->notif_send_queue->len = 0; // Flush send queue
+        // Remove our source
+        g_source_unref(dev->notify_sending_source);
+        dev->notify_sending_source = NULL;
+
+        // Delete the dead socket.
+        g_assert(dev->notif_sock != NULL);
+        g_object_unref(dev->notif_sock);
+        dev->notif_sock = NULL;
+
+        return G_SOURCE_REMOVE; // Do not continue this callback.
+    }
+
+    g_assert(FALSE); // Shouldn't get here.
+    return G_SOURCE_REMOVE;
+}
+
+guint queued_notif_send(ConnectedDevice *dev, guint8 const *data, guint len)
+{
+    g_assert(dev->notif_send_queue != NULL);
+    g_assert(dev->notif_send_queue->len <= MAX_SEND_QUEUE_BYTES);
+
+    guint to_send = len;
+
+    if (dev->notif_send_queue->len + len > MAX_SEND_QUEUE_BYTES)
+    {
+        to_send = MAX_SEND_QUEUE_BYTES - dev->notif_send_queue->len;
+        g_printf("Warning: queue to send to \"%s\" was too full!\n sending only %u/%u "
+                 "bytes.\n",
+                 dev->obj, to_send, len);
+    }
+    g_byte_array_append(dev->notif_send_queue, data, to_send);
+
+    if (dev->notif_sock == NULL || g_socket_is_closed(dev->notif_sock))
+    {
+        g_printf("Warning: trying to send to broken notify socket connection, likely a "
+                 "bug.\n");
+        return to_send;
+    }
+
+    if (dev->notify_sending_source == NULL)
+    {
+        // No GSource set up to send data.
+        // Set one up to start dishing things out.
+        dev->notify_sending_source =
+            g_socket_create_source(dev->notif_sock, G_IO_OUT, NULL);
+        g_source_set_callback(dev->notify_sending_source,
+                              G_SOURCE_FUNC(notify_write_callback), (gpointer)dev, NULL);
+        g_source_attach(dev->notify_sending_source, NULL);
+    }
+
+    return to_send;
+}
+
 gboolean notif_spam_callback(gpointer user_data)
 {
-    g_printf("Sending out BLE Notification!");
-    // Dummy function, doesn't send shit.
-    return notify_on ? G_SOURCE_CONTINUE : G_SOURCE_REMOVE;
+    ConnectedDevice *dev = (ConnectedDevice *)user_data;
+
+    if (!notify_on)
+    {
+        // Delete this source!
+        g_source_unref(dev->notify_timeout_source);
+        dev->notify_timeout_source = NULL;
+        return G_SOURCE_REMOVE;
+    }
+
+    queued_notif_send(dev, NOTIFY_REP_MSG, strlen(NOTIFY_REP_MSG));
+    g_printf("Sending out BLE Notification to \"%s\"!\n", dev->obj);
+    return G_SOURCE_CONTINUE;
 }
 
 /*
 Signal Handlers for the Characteristic!
 */
 gboolean handle_acquire_notify(BluezCharacteristicOrgBluezGattCharacteristic1 *object,
-                               GDBusMethodInvocation *invocation, GVariant *arg_options,
-                               gpointer user_data)
+                               GDBusMethodInvocation *invocation, GUnixFDList *fd_list,
+                               GVariant *arg_options, gpointer user_data)
 {
     gchar *var_string = g_variant_print(arg_options, TRUE);
     g_printf("Acquire Notify Called! Options:%s\n", var_string);
     g_free(var_string);
+
+    // What is going on with this?
+    // No idea why it passes in a null pointer?
+    g_assert(fd_list == NULL);
 
     gchar *obj = NULL;
     guint16 mtu = 0;
@@ -169,33 +340,60 @@ gboolean handle_acquire_notify(BluezCharacteristicOrgBluezGattCharacteristic1 *o
     g_assert(g_variant_lookup(arg_options, "device", "&o", &obj));
     g_assert(g_variant_lookup(arg_options, "mtu", "q", &mtu));
 
-    ConnectedDevice *conn_device = get_connected(obj);
+    ConnectedDevice *dev = get_connected(obj);
 
     // If it already has a working socket we just return that.
     // Otherwise needs a new one.
+    int socket_fds[2];
 
-    if (conn_device->notif_sock == NULL)
+    // Create a unix socketpair.
+    g_assert(
+        socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | O_CLOEXEC, 0, socket_fds) == 0);
+
+    // Delete any existing socket, not needed.
+    if (dev->notif_sock != NULL)
     {
-        conn_device->notif_sock = g_socket_new(G_SOCKET_FAMILY_UNIX, G_SOCKET_TYPE_STREAM,
-                                               G_SOCKET_PROTOCOL_DEFAULT, NULL);
+        g_printf("warning: overwriting old socket!\n");
+        g_object_unref(dev->notif_sock);
     }
 
-    // Floating variant created for this.
-    GVariant *sockfd = g_variant_new("h", g_socket_get_fd(conn_device->notif_sock));
+    // We eat the first one for ourself.
+    dev->notif_sock = g_socket_new_from_fd(socket_fds[0], NULL);
+    g_socket_set_blocking(dev->notif_sock, FALSE); // Non blocking.
+
+    // Place the other socket into a fdlist.
+    GUnixFDList *fd_list2 = g_unix_fd_list_new_from_array(&socket_fds[1], 1);
+
+    // Send over the socket and mtu.
+    bluez_characteristic_org_bluez_gatt_characteristic1_complete_acquire_notify(
+        object, invocation, fd_list2, g_variant_new_handle(0), mtu);
+
+    // freeing instantly closes the list?
+    // g_object_unref(fd_list2);
+
+    // Turn on Notifications
+    notify_on = TRUE;
 
     // Add a timeout to constantly poll device.
-    conn_device->notify_timeout_source =
-        g_timeout_add(NOTIFY_REP_TIME_MS, G_SOURCE_FUNC(notif_spam_callback),
-                      (gpointer)conn_device->obj);
+    // Delete existing if any.
+    if (dev->notify_timeout_source != NULL)
+    {
+        g_source_destroy(dev->notify_timeout_source);
+        g_source_unref(dev->notify_timeout_source);
+    }
+    // Create a source and attach to main.
+    // It is passed a pointer to the device to notify.
+    dev->notify_timeout_source = g_timeout_source_new(NOTIFY_REP_TIME_MS);
+    g_source_set_callback(dev->notify_timeout_source, G_SOURCE_FUNC(notif_spam_callback),
+                          (gpointer)dev, NULL);
+    g_source_attach(dev->notify_timeout_source, NULL);
 
-    bluez_characteristic_org_bluez_gatt_characteristic1_complete_acquire_notify(
-        object, invocation, sockfd, mtu);
     return TRUE;
 };
 
 gboolean handle_acquire_write(BluezCharacteristicOrgBluezGattCharacteristic1 *object,
-                              GDBusMethodInvocation *invocation, GVariant *arg_options,
-                              gpointer user_data)
+                              GDBusMethodInvocation *invocation, GUnixFDList *fd_list,
+                              GVariant *arg_options, gpointer user_data)
 {
     gchar *var_string = g_variant_print(arg_options, TRUE);
     g_printf("Acquire Write Called! Options:%s\n", var_string);
