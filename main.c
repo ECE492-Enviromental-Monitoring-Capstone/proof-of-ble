@@ -11,11 +11,15 @@
 #include "bluez_hci.h"
 #include "bluez_service.h"
 
+#define DBUS_PROP_IFACE "org.freedesktop.DBus.Properties"
+
 #define BLUEZ_BUS_NAME "org.bluez"
 #define BLUEZ_HCI_OBJ_PATH "/org/bluez/hci0"
 #define BLUEZ_HCI_ADV_IFACE "org.bluez.LEAdvertisingManager1"
 #define BLUEZ_HCI_GATT_MANAGER_IFACE "org.bluez.GattManager1"
+#define BLUEZ_HCI_ADAPT_IFACE "org.bluez.Adapter1"
 
+#define APP_FULL_BLUETOOTH_ALIAS "Acoustic and Environmental Monitoring Instrument"
 #define APP_BUS_NAME "edu.aemi"
 #define APP_OBJ_PATH "/edu/aemi"
 #define SERVICE_OBJ_PATH APP_OBJ_PATH "/service0"
@@ -25,8 +29,9 @@
 #define AEMI_SERVICE_UUID "2d2a7a9b-9b68-491d-b507-1f27244b5b82"
 #define AEMI_CHAR_UUID "2d2a7a9b-9b68-491d-b507-1f27244b5b83" // One Higher
 
-#define BLE_DEFAULT_MTU 23 // Minimum Required!
-
+#define BLE_DEFAULT_MTU 23                // Minimum Required!
+#define NOTIFY_REP_TIME_MS 3000           // Send message every 3 seconds
+#define NOTIFY_REP_MSG "BLE Notify On!\n" // Send this message!
 /*
 How the following code is supposed to work:
 
@@ -40,6 +45,113 @@ GDBusObjectManagerServer *obj_server = NULL;
 BluezAdvertisementOrgBluezLEAdvertisement1 *adv_iface = NULL;
 const gchar *const uuids[] = {AEMI_SERVICE_UUID, NULL};
 
+gboolean notify_on = FALSE;
+
+/*
+These are functions to handle connected devices.
+The implementation is currently behaviourly simplistic.
+
+* For each connected device -> Every 10 seconds send it a "Hi!\n" notifcation
+
+*/
+
+// This struct contains data for each connected BLE device!
+typedef struct ConnectedDevice
+{
+    guint32 counter;             // Just a random counter.
+    gchar *obj;                  // Object path for the remote device.
+    GSocket *write_sock;         // This is the socket which recieves data written to the
+                                 // characteristic.
+    GSocket *notif_sock;         // This is the socket which sends notifications out.
+    guint notify_timeout_source; // This is a callback which is using obj. Delete before
+                                 // freeing obj.
+} ConnectedDevice;
+
+// Dictionary for HCI objects (connected devices) -> ConnectedDevice .
+// (strings (really object paths) -> ConnectedDevice*)
+GHashTable *connected_dict;
+
+// Helper function for deleting a connected device.
+void free_connected(ConnectedDevice *to_remove)
+{
+
+    if (to_remove->write_sock)
+        g_object_unref(to_remove->write_sock);
+    if (to_remove->notif_sock)
+        g_object_unref(to_remove->notif_sock);
+
+    // Callback needs to be deleted before obj is freed!
+    g_source_remove(to_remove->notify_timeout_source);
+    g_free(to_remove->obj); // Delete the string we allocated for it as a key.
+    g_free(to_remove);      // Delete the entire struct.
+}
+
+// Register a new connection and create a ConnectedDevice for it.
+ConnectedDevice *new_connected(gchar const *obj)
+{
+    if (connected_dict == NULL)
+    {
+        // Lazy init!
+        connected_dict = g_hash_table_new_full(g_str_hash, g_str_equal, NULL,
+                                               (GDestroyNotify)free_connected);
+    }
+
+    static guint32 count_connected = 0;
+
+    // Allocate new device and store in list
+    ConnectedDevice *new_device = g_malloc0(sizeof(ConnectedDevice));
+
+    new_device->counter = count_connected++;
+    new_device->obj = g_strdup(obj); // Note: The key is also copied.
+    new_device->write_sock = NULL;
+    new_device->notif_sock = NULL;
+
+    /* Old code: Don't launch on startup, make on demand.
+    new_device->write_sock = g_socket_new(G_SOCKET_FAMILY_UNIX, G_SOCKET_TYPE_STREAM,
+                                          G_SOCKET_PROTOCOL_DEFAULT, NULL);
+    new_device->notif_sock = g_socket_new(G_SOCKET_FAMILY_UNIX, G_SOCKET_TYPE_STREAM,
+                                          G_SOCKET_PROTOCOL_DEFAULT, NULL);
+    */
+
+    g_hash_table_insert(connected_dict, new_device->obj, new_device);
+    return new_device;
+}
+
+// Get a ConnectedDevice* for a connected device.
+// If it doesn't exist then create one for it.
+ConnectedDevice *get_connected(gchar const *obj)
+{
+    ConnectedDevice *res = NULL;
+
+    // Try looking for it
+    if (connected_dict != NULL)
+    {
+        res = g_hash_table_lookup(connected_dict, obj);
+    }
+    // If it doesn't work just call it quits.
+    if (res == NULL)
+    {
+        res = new_connected(obj);
+    }
+    return res;
+}
+
+void remove_connected(gchar const *obj)
+{
+    g_hash_table_remove(connected_dict, obj);
+}
+
+/*
+GSources for Notifications
+
+*/
+gboolean notif_spam_callback(gpointer user_data)
+{
+    g_printf("Sending out BLE Notification!");
+    // Dummy function, doesn't send shit.
+    return notify_on ? G_SOURCE_CONTINUE : G_SOURCE_REMOVE;
+}
+
 /*
 Signal Handlers for the Characteristic!
 */
@@ -50,15 +162,44 @@ gboolean handle_acquire_notify(BluezCharacteristicOrgBluezGattCharacteristic1 *o
     gchar *var_string = g_variant_print(arg_options, TRUE);
     g_printf("Acquire Notify Called! Options:%s\n", var_string);
     g_free(var_string);
-    return FALSE; // Not Handled
+
+    gchar *obj = NULL;
+    guint16 mtu = 0;
+
+    g_assert(g_variant_lookup(arg_options, "device", "&o", &obj));
+    g_assert(g_variant_lookup(arg_options, "mtu", "q", &mtu));
+
+    ConnectedDevice *conn_device = get_connected(obj);
+
+    // If it already has a working socket we just return that.
+    // Otherwise needs a new one.
+
+    if (conn_device->notif_sock == NULL)
+    {
+        conn_device->notif_sock = g_socket_new(G_SOCKET_FAMILY_UNIX, G_SOCKET_TYPE_STREAM,
+                                               G_SOCKET_PROTOCOL_DEFAULT, NULL);
+    }
+
+    // Floating variant created for this.
+    GVariant *sockfd = g_variant_new("h", g_socket_get_fd(conn_device->notif_sock));
+
+    // Add a timeout to constantly poll device.
+    conn_device->notify_timeout_source =
+        g_timeout_add(NOTIFY_REP_TIME_MS, G_SOURCE_FUNC(notif_spam_callback),
+                      (gpointer)conn_device->obj);
+
+    bluez_characteristic_org_bluez_gatt_characteristic1_complete_acquire_notify(
+        object, invocation, sockfd, mtu);
+    return TRUE;
 };
 
 gboolean handle_acquire_write(BluezCharacteristicOrgBluezGattCharacteristic1 *object,
                               GDBusMethodInvocation *invocation, GVariant *arg_options,
                               gpointer user_data)
 {
-    g_printf("Acquire Write Called! Options:\n");
-    g_variant_print(arg_options, TRUE);
+    gchar *var_string = g_variant_print(arg_options, TRUE);
+    g_printf("Acquire Write Called! Options:%s\n", var_string);
+    g_free(var_string);
     return FALSE;
 };
 
@@ -66,9 +207,8 @@ gboolean handle_confirm(BluezCharacteristicOrgBluezGattCharacteristic1 *object,
                         GDBusMethodInvocation *invocation, gpointer user_data)
 {
     g_printf("Confirmation Recievied\n");
-
-    // No return
-    g_dbus_method_invocation_return_value(invocation, NULL);
+    bluez_characteristic_org_bluez_gatt_characteristic1_complete_confirm(object,
+                                                                         invocation);
     return TRUE;
 };
 
@@ -83,9 +223,9 @@ gboolean handle_start_notify(BluezCharacteristicOrgBluezGattCharacteristic1 *obj
                              GDBusMethodInvocation *invocation, gpointer user_data)
 {
     g_printf("Start Notify Called!\n");
-
-    // No return
-    g_dbus_method_invocation_return_value(invocation, NULL);
+    bluez_characteristic_org_bluez_gatt_characteristic1_complete_start_notify(object,
+                                                                              invocation);
+    notify_on = TRUE;
     return TRUE;
 };
 
@@ -93,9 +233,9 @@ gboolean handle_stop_notify(BluezCharacteristicOrgBluezGattCharacteristic1 *obje
                             GDBusMethodInvocation *invocation, gpointer user_data)
 {
     g_printf("Stop Notify Called!\n");
-
-    // No return
-    g_dbus_method_invocation_return_value(invocation, NULL);
+    bluez_characteristic_org_bluez_gatt_characteristic1_complete_stop_notify(object,
+                                                                             invocation);
+    notify_on = FALSE;
     return TRUE;
 };
 
@@ -158,6 +298,15 @@ void callback_bus_name_aquired(GDBusConnection *connection, const gchar *name,
                                gpointer user_data)
 {
     g_printf("Name \"%s\" aquired on system bus!\n", name);
+    g_printf("Setting up BlueTooth Adaptor\n");
+
+    // Sets device "alias" to AEMI in long form. Not really important, can be removed
+    // later. No callbacks, don't care what happens.
+    g_dbus_connection_call(sys_bus, BLUEZ_BUS_NAME, BLUEZ_HCI_OBJ_PATH, DBUS_PROP_IFACE,
+                           "Set",
+                           g_variant_new("(ssv)", BLUEZ_HCI_ADAPT_IFACE, "Alias",
+                                         g_variant_new_string(APP_FULL_BLUETOOTH_ALIAS)),
+                           NULL, G_DBUS_CALL_FLAGS_NONE, G_MAXINT, NULL, NULL, NULL);
 
     g_printf("Registering Service!\n");
     g_dbus_connection_call(sys_bus, BLUEZ_BUS_NAME, BLUEZ_HCI_OBJ_PATH,
